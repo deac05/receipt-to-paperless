@@ -82,6 +82,26 @@ form.addEventListener('submit',async event=>{
   }catch(error){status.textContent=error.message||'Upload failed. Please try again.';}finally{submit.disabled=false;}
 });
 
+const tagsList=document.querySelector('#tags-list'), tagsStatus=document.querySelector('#tags-status');
+let tagRequest=0;
+async function loadTags() {
+  const request=++tagRequest; tagsList.replaceChildren(); tagsStatus.textContent='Loading tags…';
+  try {
+    const response=await fetch('/tags'); const data=await response.json();
+    if(!response.ok) throw new Error(data.error || 'Could not load tags.');
+    if(request!==tagRequest)return;
+    if(!data.tags.length){tagsStatus.textContent='No tags found in Paperless.';return;}
+    tagsStatus.textContent='Choose one or more tags.';
+    for(const tag of data.tags){
+      const label=document.createElement('label');label.className='tag-option';
+      const input=document.createElement('input');input.type='checkbox';input.name='tags';input.value=String(tag.id);
+      const text=document.createElement('span');text.textContent=tag.name;label.append(input,text);tagsList.append(label);
+    }
+  }catch(error){if(request===tagRequest)tagsStatus.textContent=error.message || 'Could not load tags.';}
+}
+document.querySelector('#tags-refresh').addEventListener('click',loadTags);
+loadTags();
+
 const connectionForm = document.querySelector('#connection-form');
 const connectionLabel = document.querySelector('#connection-label');
 const connectionStatus = document.querySelector('#connection-status');
@@ -105,7 +125,7 @@ connectionForm.addEventListener('submit',async event=>{
     const result=await response.json();
     if (!response.ok) throw new Error(result.error || 'Could not save the connection.');
     connectionToken.value=''; connectionUrl.value=result.url; connectionLabel.textContent='Connected';
-    connectionStatus.textContent='Connected to Paperless. You can now send receipts.';
+    connectionStatus.textContent='Connected to Paperless. You can now send receipts.'; loadTags();
   } catch(error) {connectionStatus.textContent=error.message || 'Could not connect. Please try again.';}
   finally {connectButton.disabled=false;}
 });
