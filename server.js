@@ -6,17 +6,19 @@ import { fileURLToPath } from 'node:url';
 const base = process.env.PAPERLESS_URL;
 const token = process.env.PAPERLESS_TOKEN;
 const password = process.env.APP_PASSWORD;
+const username = process.env.APP_USERNAME;
 if (!base || !token || !password) throw new Error('Set PAPERLESS_URL, PAPERLESS_TOKEN and APP_PASSWORD before starting.');
 const paperless = new URL(base.endsWith('/') ? base : base + '/');
 if (!['http:', 'https:'].includes(paperless.protocol) || paperless.username || paperless.password || paperless.search || paperless.hash) throw new Error('Invalid PAPERLESS_URL');
 const maxBytes = 20 * 1024 * 1024;
-const files = {'/': ['index.html','text/html; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8'], '/icon.svg':['icon.svg','image/svg+xml']};
+const files = {'/': ['index.html','text/html; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/crop.js':['crop.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8'], '/icon.svg':['icon.svg','image/svg+xml']};
 function authorised(header) {
   if (!header?.startsWith('Basic ')) return false;
   const decoded = Buffer.from(header.slice(6), 'base64').toString();
   const supplied = Buffer.from(decoded.slice(decoded.indexOf(':') + 1));
   const expected = Buffer.from(password);
-  return decoded.includes(':') && supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  const separator = decoded.indexOf(':');
+  return separator !== -1 && (!username || decoded.slice(0, separator) === username) && supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 const server = http.createServer(async (req,res) => {
   res.setHeader('X-Content-Type-Options','nosniff');
