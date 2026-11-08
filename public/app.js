@@ -69,3 +69,32 @@ form.addEventListener('submit',async event=>{
   } catch(error) {status.textContent=error.message || 'Upload failed. Please try again.';}
   finally {submit.disabled=false;}
 });
+
+const connectionForm = document.querySelector('#connection-form');
+const connectionLabel = document.querySelector('#connection-label');
+const connectionStatus = document.querySelector('#connection-status');
+const connectionUrl = document.querySelector('#paperless-url');
+const connectionToken = document.querySelector('#paperless-token');
+const connectButton = document.querySelector('#connect');
+async function showConnection() {
+  try {
+    const response=await fetch('/connection');
+    if (!response.ok) throw new Error();
+    const data=await response.json();
+    connectionLabel.textContent=data.connected?'Connected':'Not connected';
+    connectionUrl.value=data.url || '';
+    if (!data.connected) document.querySelector('#settings').open=true;
+  } catch {connectionLabel.textContent='Unavailable';}
+}
+connectionForm.addEventListener('submit',async event=>{
+  event.preventDefault(); connectButton.disabled=true; connectionStatus.textContent='Checking your connection…';
+  try {
+    const response=await fetch('/connection',{method:'POST',headers:{'Content-Type':'application/json','X-Receipt-Upload':'1'},body:JSON.stringify({url:connectionUrl.value.trim(),token:connectionToken.value.trim()})});
+    const result=await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not save the connection.');
+    connectionToken.value=''; connectionUrl.value=result.url; connectionLabel.textContent='Connected';
+    connectionStatus.textContent='Connected to Paperless. You can now send receipts.';
+  } catch(error) {connectionStatus.textContent=error.message || 'Could not connect. Please try again.';}
+  finally {connectButton.disabled=false;}
+});
+showConnection();
