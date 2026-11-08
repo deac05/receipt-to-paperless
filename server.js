@@ -51,6 +51,23 @@ const server = http.createServer(async (req,res) => {
     try {const data = await readFile(fileURLToPath(new URL('./public/'+name, import.meta.url))); res.writeHead(200,{'Content-Type':type}); return res.end(data);} catch {res.writeHead(500); return res.end('Unable to load app');}
   }
   if (req.method === 'GET' && path === '/connection') return json(res,200,{connected:!!connection,url:connection?.url || ''});
+  if (req.method === 'GET' && path === '/tags') {
+    if (!connection) return json(res,400,{error:'Connect Paperless in settings first.'});
+    const target=connection, tags=[];
+    try {
+      for (let page=1;page<=100;page++) {
+        const url=new URL('api/tags/',target.url);
+        url.searchParams.set('page',String(page)); url.searchParams.set('page_size','100');
+        const response=await fetch(url,{headers:{Authorization:`Token ${target.token}`},redirect:'manual',signal:AbortSignal.timeout(12000)});
+        if(!response.ok) throw new Error('Paperless rejected the request');
+        const result=await response.json();
+        if(!Array.isArray(result.results)) throw new Error('Invalid response');
+        for(const tag of result.results) if(Number.isSafeInteger(tag.id) && typeof tag.name==='string') tags.push({id:tag.id,name:tag.name});
+        if(!result.next) return json(res,200,{tags});
+      }
+      throw new Error('Too many pages');
+    } catch {return json(res,502,{error:'Could not load Paperless tags. Please try again.'});}
+  }
   if (req.method === 'POST' && path === '/connection') {
     if (req.headers['x-receipt-upload'] !== '1' || !req.headers['content-type']?.startsWith('application/json')) return json(res,403,{error:'Invalid request.'});
     let candidate;
