@@ -1,73 +1,85 @@
 import { findReceipt } from './crop.js';
-const form = document.querySelector('#form');
-const photo = document.querySelector('#photo');
-const preview = document.querySelector('#preview');
-const image = document.querySelector('#image');
-const filename = document.querySelector('#filename');
-const status = document.querySelector('#status');
-const cropStatus = document.querySelector('#crop-status');
-const toggleCrop = document.querySelector('#toggle-crop');
-const submit = document.querySelector('#submit');
-let objectUrl, croppedFile, useCrop = false, generation = 0;
-function showFile(file) {
-  if (objectUrl) URL.revokeObjectURL(objectUrl);
-  objectUrl = URL.createObjectURL(file); image.src = objectUrl;
+const form=document.querySelector('#form'), photo=document.querySelector('#photo');
+const preview=document.querySelector('#preview'), image=document.querySelector('#image'), video=document.querySelector('#video');
+const frame=document.querySelector('#scan-frame'), overlay=document.querySelector('#overlay'), rect=document.querySelector('#crop-rect');
+const filename=document.querySelector('#filename'), status=document.querySelector('#status'), cropStatus=document.querySelector('#crop-status');
+const toggle=document.querySelector('#toggle-crop'), detect=document.querySelector('#detect'), shutter=document.querySelector('#shutter'), submit=document.querySelector('#submit');
+const cameraMessage=document.querySelector('#camera-message');
+let stream, timer, objectUrl, file, bounds={left:.1,top:.1,right:.9,bottom:.9}, usingCrop=true, live=false, manual=false, generation=0;
+function paint(){
+  rect.setAttribute('x',bounds.left*1000); rect.setAttribute('y',bounds.top*1000);
+  rect.setAttribute('width',(bounds.right-bounds.left)*1000); rect.setAttribute('height',(bounds.bottom-bounds.top)*1000);
+  for(const node of overlay.querySelectorAll('circle')) {const c=node.dataset.corner; node.setAttribute('cx',(c.endsWith('l')?bounds.left:bounds.right)*1000); node.setAttribute('cy',(c.startsWith('t')?bounds.top:bounds.bottom)*1000);}
 }
-function clearPreview() {
-  generation++; croppedFile = null; useCrop = false; submit.disabled = false;
-  if (objectUrl) URL.revokeObjectURL(objectUrl);
-  objectUrl = null; preview.hidden = true; image.hidden = true; toggleCrop.hidden = true; cropStatus.textContent = '';
+paint();
+function stopCamera(){ if(timer) clearInterval(timer); timer=null; if(stream) stream.getTracks().forEach(t=>t.stop()); stream=null; video.srcObject=null; live=false; video.hidden=true; shutter.hidden=true; }
+function clear(){generation++;stopCamera(); if(objectUrl) URL.revokeObjectURL(objectUrl); objectUrl=null; file=null; photo.value=''; preview.hidden=true; image.hidden=true; overlay.hidden=false; toggle.hidden=false; detect.hidden=false; submit.disabled=false;}
+function autoDetect(source){
+  const w=source.videoWidth||source.naturalWidth, h=source.videoHeight||source.naturalHeight; if(!w||!h)return false;
+  const scale=Math.min(1,320/Math.max(w,h)), canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round(w*scale));canvas.height=Math.max(1,Math.round(h*scale));
+  const context=canvas.getContext('2d',{willReadFrequently:true}); context.drawImage(source,0,0,canvas.width,canvas.height);
+  const found=findReceipt(context.getImageData(0,0,canvas.width,canvas.height).data,canvas.width,canvas.height);
+  if(found){bounds={left:found.x/canvas.width,top:found.y/canvas.height,right:(found.x+found.width)/canvas.width,bottom:(found.y+found.height)/canvas.height};paint();return true;}
+  return false;
 }
-photo.addEventListener('change', async () => {
-  clearPreview(); status.textContent = '';
-  const file = photo.files[0]; if (!file) return;
-  const current = generation;
-  preview.hidden = false; filename.textContent = file.name;
-  if (!file.type.startsWith('image/')) { cropStatus.textContent = 'PDF selected; the original file will be sent.'; return; }
-  image.hidden = false; showFile(file); submit.disabled = true; cropStatus.textContent = 'Looking for receipt edges…';
-  try {
-    const source = new Image(); source.src = URL.createObjectURL(file);
-    try { await source.decode(); } finally { URL.revokeObjectURL(source.src); }
-    if (current !== generation) return;
-    const scale = Math.min(1, 512 / Math.max(source.naturalWidth, source.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(source.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
-    const ctx = canvas.getContext('2d', {willReadFrequently:true}); ctx.drawImage(source,0,0,canvas.width,canvas.height);
-    const bounds = findReceipt(ctx.getImageData(0,0,canvas.width,canvas.height).data,canvas.width,canvas.height);
-    if (!bounds) {cropStatus.textContent = 'Could not confidently find the edges. The original photo will be sent.'; return;}
-    const sx=source.naturalWidth/canvas.width, sy=source.naturalHeight/canvas.height;
-    const output=document.createElement('canvas');
-    const left=Math.floor(bounds.x*sx), top=Math.floor(bounds.y*sy);
-    const right=Math.min(source.naturalWidth,Math.ceil((bounds.x+bounds.width)*sx)), bottom=Math.min(source.naturalHeight,Math.ceil((bounds.y+bounds.height)*sy));
-    output.width=right-left; output.height=bottom-top;
-    output.getContext('2d').drawImage(source,left,top,output.width,output.height,0,0,output.width,output.height);
-    const blob=await new Promise(resolve=>output.toBlob(resolve,'image/jpeg',.93));
-    if (current !== generation) return;
-    if (!blob) throw new Error('Image conversion failed');
-    croppedFile=new File([blob],file.name.replace(/\.[^.]*$/, '')+'-cropped.jpg',{type:'image/jpeg'}); useCrop=true;
-    showFile(croppedFile); toggleCrop.hidden=false; toggleCrop.textContent='Use original photo';
-    cropStatus.textContent='Automatically cropped. Check that the whole receipt is visible.';
-  } catch { if(current===generation) cropStatus.textContent='Could not crop this image. The original photo will be sent.'; }
-  finally {if(current===generation) submit.disabled=false;}
+function describe(found){cropStatus.textContent=found?'Outline found. Drag the corners to adjust it.':'Drag the green corners to fit the receipt.';}
+async function loadImage(nextFile, initialBounds){
+  clear(); const current=generation; file=nextFile; preview.hidden=false; filename.textContent=file.name;
+  if(!file.type.startsWith('image/')){image.hidden=true;overlay.hidden=true;toggle.hidden=true;detect.hidden=true;cropStatus.textContent='PDF selected. It will be sent unchanged.';return;}
+  objectUrl=URL.createObjectURL(file); image.src=objectUrl; image.hidden=false; submit.disabled=true;
+  try{await image.decode(); if(current!==generation)return; usingCrop=true;toggle.textContent='Use original photo';
+    if(initialBounds){bounds=initialBounds;paint();describe(true);}else{bounds={left:.1,top:.1,right:.9,bottom:.9};paint();describe(autoDetect(image));}
+  }catch{if(current===generation){overlay.hidden=true;toggle.hidden=true;detect.hidden=true;usingCrop=false;cropStatus.textContent='Preview unavailable. The original file will be sent.';}}
+  finally{if(current===generation)submit.disabled=false;}
+}
+photo.addEventListener('change',()=>{const selected=photo.files[0];if(selected)loadImage(selected);});
+document.querySelector('#camera-start').addEventListener('click',async()=>{
+  clear(); status.textContent=''; cameraMessage.textContent=''; const current=generation;
+  if(!navigator.mediaDevices?.getUserMedia){cameraMessage.textContent='Live camera needs a secure HTTPS connection. Use “Take a photo or choose a file” to adjust a photo instead.';return;}
+  try{
+    const opened=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    if(current!==generation){opened.getTracks().forEach(t=>t.stop());return;}
+    stream=opened;live=true;manual=false;usingCrop=true;video.srcObject=stream;video.hidden=false;image.hidden=true;preview.hidden=false;shutter.hidden=false;toggle.hidden=true;filename.textContent='Live camera';
+    await video.play();if(current!==generation)return;
+    bounds={left:.1,top:.1,right:.9,bottom:.9};paint();cropStatus.textContent='Position the receipt, then drag the corners if needed.';
+    timer=setInterval(()=>{if(live&&!manual){try{if(autoDetect(video))describe(true);}catch{}}},1200);
+  }catch{stopCamera();cameraMessage.textContent='Camera unavailable. Allow camera access, or take a photo using the file button.';}
 });
-toggleCrop.addEventListener('click',()=>{
-  useCrop=!useCrop; showFile(useCrop ? croppedFile : photo.files[0]);
-  toggleCrop.textContent=useCrop?'Use original photo':'Use automatic crop';
-  cropStatus.textContent=useCrop?'Automatically cropped. Check that the whole receipt is visible.':'Original photo selected.';
+shutter.addEventListener('click',async()=>{
+  if(!live || !video.videoWidth)return;
+  const current=generation, saved={...bounds}, canvas=document.createElement('canvas');canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0);shutter.disabled=true;
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.94));shutter.disabled=false;
+  if(current!==generation)return;
+  if(blob)loadImage(new File([blob],'receipt.jpg',{type:'image/jpeg'}),saved);else cameraMessage.textContent='Could not capture the photo. Try again.';
 });
-document.querySelector('#remove').addEventListener('click',()=>{photo.value=''; clearPreview(); status.textContent='';});
+overlay.addEventListener('pointerdown',event=>{
+  const corner=event.target.dataset.corner;if(!corner)return;event.preventDefault();manual=true;overlay.setPointerCapture(event.pointerId);
+  const move=e=>{const box=frame.getBoundingClientRect(),x=Math.max(0,Math.min(1,(e.clientX-box.left)/box.width)),y=Math.max(0,Math.min(1,(e.clientY-box.top)/box.height));
+    if(corner.endsWith('l'))bounds.left=Math.min(x,bounds.right-.05);else bounds.right=Math.max(x,bounds.left+.05);
+    if(corner.startsWith('t'))bounds.top=Math.min(y,bounds.bottom-.05);else bounds.bottom=Math.max(y,bounds.top+.05);paint();};
+  const up=()=>{overlay.removeEventListener('pointermove',move);overlay.removeEventListener('pointerup',up);overlay.removeEventListener('pointercancel',up);};
+  overlay.addEventListener('pointermove',move);overlay.addEventListener('pointerup',up);overlay.addEventListener('pointercancel',up);
+});
+detect.addEventListener('click',()=>{manual=false;usingCrop=true;overlay.hidden=false;toggle.textContent='Use original photo';try{describe(autoDetect(live?video:image));}catch{describe(false);}});
+toggle.addEventListener('click',()=>{usingCrop=!usingCrop;overlay.hidden=!usingCrop;toggle.textContent=usingCrop?'Use original photo':'Crop photo';cropStatus.textContent=usingCrop?'Drag the green corners to fit the receipt.':'Original photo selected.';});
+document.querySelector('#remove').addEventListener('click',()=>{clear();status.textContent='';});
+window.addEventListener('pagehide',stopCamera);
 form.addEventListener('submit',async event=>{
-  event.preventDefault();
-  const file=useCrop ? croppedFile : photo.files[0]; if (!file) return;
-  if (file.size > 19 * 1024 * 1024) {status.textContent='Please choose a file under 19 MB.'; return;}
-  submit.disabled=true; status.textContent='Sending your receipt…';
-  try {
-    const data=new FormData(form); data.set('document',file,file.name);
-    const response=await fetch('/upload',{method:'POST',headers:{'X-Receipt-Upload':'1'},body:data});
-    if (!response.ok) throw new Error(await response.text());
-    form.reset(); clearPreview(); status.textContent='Sent! Paperless has queued your receipt for processing.';
-  } catch(error) {status.textContent=error.message || 'Upload failed. Please try again.';}
-  finally {submit.disabled=false;}
+  event.preventDefault();if(live){status.textContent='Take a photo first.';return;}if(!file){status.textContent='Take or choose a photo first.';return;}
+  submit.disabled=true;status.textContent='Preparing receipt…';
+  try{
+    let upload=file;
+    if(usingCrop && file.type.startsWith('image/') && !image.hidden){
+      const x=Math.floor(bounds.left*image.naturalWidth),y=Math.floor(bounds.top*image.naturalHeight),right=Math.ceil(bounds.right*image.naturalWidth),bottom=Math.ceil(bounds.bottom*image.naturalHeight);
+      const canvas=document.createElement('canvas');canvas.width=right-x;canvas.height=bottom-y;canvas.getContext('2d').drawImage(image,x,y,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.94));if(!blob)throw new Error('Could not crop the photo.');upload=new File([blob],file.name.replace(/\.[^.]*$/,'')+'-cropped.jpg',{type:'image/jpeg'});
+    }
+    if(upload.size>19*1024*1024)throw new Error('Please choose a file under 19 MB.');
+    status.textContent='Sending your receipt…';const data=new FormData(form);data.set('document',upload,upload.name);
+    const response=await fetch('/upload',{method:'POST',headers:{'X-Receipt-Upload':'1'},body:data});if(!response.ok)throw new Error(await response.text());
+    form.reset();clear();status.textContent='Sent! Paperless has queued your receipt for processing.';
+  }catch(error){status.textContent=error.message||'Upload failed. Please try again.';}finally{submit.disabled=false;}
 });
 
 const connectionForm = document.querySelector('#connection-form');
