@@ -29,10 +29,11 @@ test('connects through the app and retains the connection after restart', async 
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const dir=await mkdtemp(join(tmpdir(),'receipt-test-'));
-  let uploads=0;
+  let uploads=0, uploadedBody="";
   const mock=http.createServer(async(req,res)=>{
     if(req.headers.authorization !== 'Token correct-token') {res.writeHead(401); return res.end();}
-    if(req.method==='POST') {uploads++; for await (const c of req) {} res.writeHead(200); return res.end('"queued"');}
+    if(req.method==='POST') {uploads++; const chunks=[]; for await (const c of req) chunks.push(c); uploadedBody=Buffer.concat(chunks).toString(); res.writeHead(200); return res.end('"queued"');}
+    if(req.url.startsWith('/api/tags/')) {const page=new URL(req.url,'http://localhost').searchParams.get('page'); res.writeHead(200,{'content-type':'application/json'}); return res.end(JSON.stringify(page==='1'?{results:[{id:3,name:'Business'}],next:'next'}:{results:[{id:7,name:'Food'}],next:null}));}
     res.writeHead(200,{'content-type':'application/json'}); res.end('{"results":[]}');
   });
   mock.listen(0,'127.0.0.1'); await once(mock,'listening');
@@ -47,6 +48,7 @@ test('connects through the app and retains the connection after restart', async 
   response=await fetch(url+'/connection',{method:'POST',headers,body:JSON.stringify(settings)}); assert.equal(response.status,400);
   settings.token='correct-token'; response=await fetch(url+'/connection',{method:'POST',headers,body:JSON.stringify(settings)}); assert.equal(response.status,200); assert.doesNotMatch(await response.text(),/correct-token/);
   app.kill(); await once(app,'exit'); response=await start(); const state=await response.json(); assert.equal(state.connected,true); assert.equal(state.url,settings.url); assert.doesNotMatch(JSON.stringify(state),/correct-token/);
-  const form=new FormData(); form.set('document',new Blob(['receipt']),'receipt.jpg');
-  response=await fetch(url+'/upload',{method:'POST',headers:{authorization:auth,'x-receipt-upload':'1'},body:form}); assert.equal(response.status,202); assert.equal(uploads,1);
+  response=await fetch(url+'/tags',{headers:{authorization:auth}}); assert.deepEqual((await response.json()).tags,[{id:3,name:'Business'},{id:7,name:'Food'}]);
+  const form=new FormData(); form.set('document',new Blob(['receipt']),'receipt.jpg'); form.append('tags','3'); form.append('tags','7');
+  response=await fetch(url+'/upload',{method:'POST',headers:{authorization:auth,'x-receipt-upload':'1'},body:form}); assert.equal(response.status,202); assert.equal(uploads,1); assert.match(uploadedBody,/name="tags"\r\n\r\n3/); assert.match(uploadedBody,/name="tags"\r\n\r\n7/);
 });
