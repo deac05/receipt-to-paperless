@@ -27,7 +27,7 @@ docker build -t receipt-to-paperless .
 docker run --rm --env APP_PASSWORD --env APP_USERNAME -e HOST=0.0.0.0 -p 127.0.0.1:3000:3000 -v receipt-paperless-data:/data receipt-to-paperless
 ```
 
-Choose **Open live camera** to see an outline over the camera preview, or use **Take a photo or choose a file**. The app attempts to detect the receipt; drag the four corners to adjust its rectangular crop before taking or sending the photo. You can also select the original photo. Live camera access requires a secure HTTPS connection (or localhost) and camera permission; on HTTP, use the photo picker and adjust the outline after taking the picture. Camera and file-picker behaviour depends on the device and browser. The maximum request size is 20 MiB. Paperless handles OCR and classification. PDFs are sent unchanged. Perspective correction is not supported.
+Choose **Open live camera** to see an outline over the camera preview, or use **Take a photo or choose a file**. The app attempts to detect the receipt; drag the four corners to adjust its rectangular crop before taking or sending the photo. You can also select the original photo. Live camera access requires a secure HTTPS connection (or localhost) and camera permission; on HTTP, use the photo picker and adjust the outline after taking the picture. Camera and file-picker behaviour depends on the device and browser. The maximum request size is 20 MiB. Select any existing Paperless tags before sending; the app loads all available tags from the connected server. Paperless handles OCR and classification. PDFs are sent unchanged. Perspective correction is not supported.
 
 ## Development
 
