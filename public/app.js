@@ -130,3 +130,7 @@ connectionForm.addEventListener('submit',async event=>{
   finally {connectButton.disabled=false;}
 });
 showConnection();
+
+const logout=document.querySelector('#logout');
+fetch('/auth/status').then(r=>r.json()).then(info=>{logout.hidden=!info.required; if(info.required&&!info.authenticated)location.replace('/login');}).catch(()=>{});
+logout.addEventListener('click',async()=>{await fetch('/auth/logout',{method:'POST',headers:{'X-Receipt-Upload':'1'}});location.replace('/login');});

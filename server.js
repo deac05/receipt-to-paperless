@@ -1,12 +1,13 @@
 import http from 'node:http';
 import { readFile, mkdir, writeFile, rename, unlink } from 'node:fs/promises';
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+import { timingSafeEqual, randomUUID, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 const password = process.env.APP_PASSWORD;
 const username = process.env.APP_USERNAME;
-if (!password) throw new Error('Set APP_PASSWORD before starting.');
+const authDisabled = process.env.APP_AUTH_DISABLED === 'true';
+if (!authDisabled && !password) throw new Error('Set APP_PASSWORD or explicitly set APP_AUTH_DISABLED=true.');
 const dataDir = process.env.APP_DATA_DIR || './data';
 const configPath = join(dataDir, 'paperless.json');
 function validateConnection(base, token) {
@@ -24,14 +25,21 @@ try {
   if (process.env.PAPERLESS_URL && process.env.PAPERLESS_TOKEN) connection = validateConnection(process.env.PAPERLESS_URL, process.env.PAPERLESS_TOKEN);
 }
 const maxBytes = 20 * 1024 * 1024;
-const files = {'/': ['index.html','text/html; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/crop.js':['crop.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8'], '/icon.svg':['icon.svg','image/svg+xml']};
-function authorised(header) {
-  if (!header?.startsWith('Basic ')) return false;
-  const decoded = Buffer.from(header.slice(6), 'base64').toString();
-  const supplied = Buffer.from(decoded.slice(decoded.indexOf(':') + 1));
-  const expected = Buffer.from(password);
-  const separator = decoded.indexOf(':');
-  return separator !== -1 && (!username || decoded.slice(0, separator) === username) && supplied.length === expected.length && timingSafeEqual(supplied, expected);
+const files = {'/': ['index.html','text/html; charset=utf-8'], '/login': ['login.html','text/html; charset=utf-8'], '/login.js':['login.js','text/javascript; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/crop.js':['crop.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8'], '/icon.svg':['icon.svg','image/svg+xml'], '/icon-192.png':['icon-192.png','image/png'], '/icon-512.png':['icon-512.png','image/png'], '/manifest.webmanifest':['manifest.webmanifest','application/manifest+json']};
+const publicFiles=new Set(['/login','/login.js','/style.css','/icon.svg','/icon-192.png','/icon-512.png','/manifest.webmanifest']);
+const sessions=new Map(), sessionLifetime=24*60*60*1000;
+function sessionId(req) {return (req.headers.cookie || '').split(';').map(s=>s.trim()).find(s=>s.startsWith('receipt_session='))?.slice('receipt_session='.length);}
+function authorised(req) {
+  if(authDisabled)return true;
+  const id=sessionId(req), expiry=sessions.get(id);
+  if(!expiry)return false;
+  if(expiry<Date.now()){sessions.delete(id);return false;}
+  return true;
+}
+function sameSecret(a,b) {const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length && timingSafeEqual(x,y);}
+function cookie(req,id,maxAge){
+  const secure=req.socket.encrypted || req.headers['x-forwarded-proto']==='https';
+  return `receipt_session=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure?'; Secure':''}`;
 }
 async function body(req, limit) {
   if (Number(req.headers['content-length']) > limit) throw new Error('too large');
@@ -44,8 +52,25 @@ const server = http.createServer(async (req,res) => {
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Cache-Control','no-store');
   res.setHeader('Content-Security-Policy',"default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
-  if (!authorised(req.headers.authorization)) {res.writeHead(401, {'WWW-Authenticate':'Basic realm="Receipt to Paperless", charset="UTF-8"'}); return res.end('Sign in required');}
   const path = new URL(req.url, 'http://localhost').pathname;
+  if(req.method==='GET' && path==='/auth/status')return json(res,200,{required:!authDisabled,authenticated:authorised(req)});
+  if(req.method==='POST' && path==='/auth/login') {
+    if(req.headers['x-receipt-upload']!=='1' || !req.headers['content-type']?.startsWith('application/json'))return json(res,403,{error:'Invalid request.'});
+    if(authDisabled)return json(res,200,{authenticated:true});
+    let input;try{input=JSON.parse((await body(req,8192)).toString('utf8'));}catch{return json(res,400,{error:'Invalid sign-in request.'});}
+    if(typeof input.username!=='string'||typeof input.password!=='string'||(username && !sameSecret(input.username,username))||!sameSecret(input.password,password))return json(res,401,{error:'Incorrect username or password.'});
+    for(const [id,expiry] of sessions)if(expiry<Date.now())sessions.delete(id);
+    if(sessions.size>=1000)sessions.delete(sessions.keys().next().value);
+    const id=randomBytes(32).toString('hex');sessions.set(id,Date.now()+sessionLifetime);res.setHeader('Set-Cookie',cookie(req,id,sessionLifetime/1000));return json(res,200,{authenticated:true});
+  }
+  if(req.method==='POST' && path==='/auth/logout'){
+    if(req.headers['x-receipt-upload']!=='1')return json(res,403,{error:'Invalid request.'});
+    sessions.delete(sessionId(req));res.setHeader('Set-Cookie',cookie(req,'',0));return json(res,200,{authenticated:false});
+  }
+  if (!authorised(req) && !(req.method==='GET' && publicFiles.has(path))) {
+    if(req.method==='GET' && path==='/'){res.writeHead(303,{Location:'/login'});return res.end();}
+    return json(res,401,{error:'Sign in required.'});
+  }
   if (req.method === 'GET' && files[path]) {
     const [name,type] = files[path];
     try {const data = await readFile(fileURLToPath(new URL('./public/'+name, import.meta.url))); res.writeHead(200,{'Content-Type':type}); return res.end(data);} catch {res.writeHead(500); return res.end('Unable to load app');}
